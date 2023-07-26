@@ -1,0 +1,5 @@
+-- INSERT INTO picture VALUES (1, 'finger_up.gif');
+--
+-- INSERT INTO meme VALUES ("ThumbUp", 1)
+--
+-- INSERT INTO category VALUES (1, )
