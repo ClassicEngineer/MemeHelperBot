@@ -1,6 +1,5 @@
 package ru.daniladeveloper.meme;
 
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.ResourceUtils;
@@ -29,37 +28,20 @@ public class MemeStorage {
     private final CategoryRepository categoryRepository;
 
 
-//    @PostConstruct
-//    public void post() {
-//        String memeId = "ThumbUp";
-//        String picturePath = "finger_up.gif";
-//        PictureEntity picture = new PictureEntity(1L, picturePath);
-//        CategoryEntity films = new CategoryEntity(1L, "фильмы");
-//        CategoryEntity old = new CategoryEntity(2L, "олд");
-//
-//        MemeEntity meme = new MemeEntity(memeId, "Парень поднимает палец вверх сидя за компьютером", picture, List.of(films, old));
-//
-//        pictureRepository.save(picture);
-//        categoryRepository.saveAll(List.of(films, old));
-//        memeRepository.save(meme);
-//
-//    }
 
     public MemeFile findByInput(String incomeText) {
-        String[] request = incomeText.split(FIND);
-        String search = request[1].trim();
-        Optional<MemeEntity> meme = memeRepository.findById(search);
+        Optional<MemeEntity> meme = memeRepository.findById(incomeText);
         String path = Constants.NOT_FOUND_IMAGE;
         try {
             if (meme.isPresent()) {
                 path = meme.get().getPicture().getPath();
             } else {
-                List<MemeEntity> memes = memeRepository.findByDescriptionContainsIgnoreCase(search);
+                List<MemeEntity> memes = memeRepository.findByDescriptionContainsIgnoreCase(incomeText);
                 if (!memes.isEmpty()) {
                     path = memes.get(0).getPicture().getPath();
                 }
             }
-            File file = ResourceUtils.getFile(MEMES + path);
+            File file = ResourceUtils.getFile(path);
             return MemeFile.build(file, path);
         } catch (FileNotFoundException e) {
             throw new RuntimeException(e);
@@ -78,7 +60,7 @@ public class MemeStorage {
         try {
             for (var mem : memes) {
                 String path = mem.getPicture().getPath();
-                File file = ResourceUtils.getFile(MEMES + path);
+                File file = ResourceUtils.getFile(MEMES_DIR + path);
                 result.add(MemeFile.build(file, path));
             }
         } catch (FileNotFoundException e) {
@@ -88,4 +70,21 @@ public class MemeStorage {
     }
 
 
+    public Long saveFilePath(String fullFileName) {
+        PictureEntity saved = pictureRepository.save(new PictureEntity(0L, fullFileName));
+        return saved.getId();
+    }
+
+    public void addMemByStage(ChatAddStage stage) {
+        String memeId = stage.getName();
+
+        PictureEntity picture = pictureRepository.getReferenceById(stage.getPictureId());
+        CategoryEntity category = new CategoryEntity(null, stage.getCategory());
+        category = categoryRepository.save(category);
+        MemeEntity meme = new MemeEntity(memeId, stage.getDescription(), picture, List.of(category));
+
+        pictureRepository.save(picture);
+
+        memeRepository.save(meme);
+    }
 }
