@@ -1,10 +1,12 @@
-package ru.daniladeveloper.meme.domain;
+package ru.daniladeveloper.meme.domain.entity;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+@Getter
 @Entity
 @Builder
 @AllArgsConstructor

@@ -1,12 +1,11 @@
-package ru.daniladeveloper.meme;
+package ru.daniladeveloper.meme.application;
 
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.java.Log;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.telegram.abilitybots.api.bot.AbilityBot;
-import org.telegram.abilitybots.api.objects.Ability;
+import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
 import org.telegram.telegrambots.meta.api.methods.BotApiMethod;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
@@ -21,8 +20,10 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.Keyboard
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
+import ru.daniladeveloper.meme.api.ChatStage;
+import ru.daniladeveloper.meme.domain.Meme;
+import ru.daniladeveloper.meme.infrustructure.FindMemeResult;
 import ru.daniladeveloper.meme.infrustructure.MemeFile;
-import ru.daniladeveloper.meme.infrustructure.Stage;
 
 
 import java.io.IOException;
@@ -30,47 +31,174 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
 
-import static org.telegram.abilitybots.api.objects.Locality.USER;
-import static org.telegram.abilitybots.api.objects.Privacy.ADMIN;
 import static ru.daniladeveloper.meme.infrustructure.Constants.*;
 
 
 @Log
 @Component
-public class MemesBot extends AbilityBot {
+@RequiredArgsConstructor
+public class MemesBot extends TelegramLongPollingBot {
 
-    @Autowired
-    private MemeStorage memeStorage;
+    private final MemeStorage memeStorage;
 
-    private Long creatorId;
+    @Value("${botToken}")
+    private String botToken;
 
-    private final Map<String, ChatAddStage> chatToStage;
+    @Value("${botUserName}")
+    private String botUserName;
 
-    public MemesBot(@Value("${botToken}") String token,
-                    @Value("${botUserName}")String username,
-                    @Value("${creatorId}") Long creatorId) {
-        super(token, username);
-        this.creatorId = creatorId;
-        this.chatToStage = new ConcurrentHashMap<>();
+    @Override
+    public String getBotToken() {
+        return botToken;
     }
 
     @Override
-    public long creatorId() {
-        return creatorId;
+    public String getBotUsername() {
+        return botUserName;
+    }
+    private final Map<String, ChatStage> chatToStage = new ConcurrentHashMap<>();
+
+    @Override
+    public void onUpdateReceived(Update update) {
+        if (update.hasMessage() && update.getMessage().hasText()) {
+            String incomeText = update.getMessage().getText();
+            String chatId = update.getMessage().getChatId().toString();
+            ChatStage stage = this.chatToStage.get(chatId);
+            if (stage == null ) {
+                stage = new ChatStage(Stage.START);
+                this.chatToStage.put(chatId, stage);
+            }
+            try {
+                if (incomeText.equalsIgnoreCase(FIND)) {
+                    stage.setStage(Stage.SEARCH_START_KEYWORDS);
+                    sendText(chatId, "Enter key-words to find your mem");
+                } else if (incomeText.equalsIgnoreCase(ADD)) {
+                    stage.setStage(Stage.ADD_START_NAME);
+                    sendText(chatId, "Enter name of mem");
+                } else if (incomeText.equalsIgnoreCase(MENU) || incomeText.equalsIgnoreCase(CANCEL)) {
+                    stage.setStage(Stage.START);
+                    execute(getMenuMessage(chatId));
+                }
+
+                else {
+                    switch (stage.getStage()) {
+                            case START -> sendText(chatId, "You wanna play? Let's play!");
+                            case SEARCH_START_KEYWORDS -> {
+                                var result = memeStorage.findByInput(incomeText);
+                                if (!result.isMultiple()) {
+                                    sendTo(chatId, result.getResult());
+                                    stage.setStage(Stage.START);
+                                }
+                                else {
+                                    sendText(chatId, "We've found several results. Please choose:");
+                                    sendText(chatId, result.toMultipleChoice());
+                                    stage.setStage(Stage.SEARCH_CHOICE);
+                                    stage.getSearchParameters().setFindResult(result);
+                                }
+                            }
+                            case SEARCH_CHOICE -> {
+                                FindMemeResult findResult = stage.getSearchParameters().getFindResult();
+                                Optional<Meme> memeByNumber = findResult.getMemeByNumber(incomeText);
+                                if (memeByNumber.isPresent()) {
+                                    var meme = memeStorage.findByName(memeByNumber.get());
+                                    sendTo(chatId, meme);
+                                    stage.setStage(Stage.START);
+                                }
+                                else {
+                                    sendText(chatId, "Unable to find meme\nPlease choose another one option.");
+                                }
+                            }
+                            case ADD_START_NAME -> {
+                                if (!isMemeNameUnique(incomeText)) {
+                                    sendText(chatId, "Name for mem: '" + incomeText + "' is not unique!\nPlease choose another one.");
+                                } else {
+                                    stage.getAddParameters().setName(incomeText);
+                                    stage.setStage(Stage.ADD_FILE);
+                                    sendText(chatId, "Good name for mem: " + incomeText + "\nNow give me mem-file");
+
+                                }
+                            }
+                            case ADD_DESCRIPTION -> {
+                                stage.getAddParameters().setDescription(incomeText);
+                                stage.setStage(Stage.ADD_CATEGORY);
+                                sendText(chatId, "Now let's add category for mem");
+                            }
+                            case ADD_CATEGORY -> {
+                                stage.getAddParameters().setCategory(incomeText);
+                                memeStorage.addMemByStage(stage.getAddParameters());
+                                stage.setStage(Stage.START);
+                                sendText(chatId, "Good job! Mem was saved.");
+                            }
+                            default -> sendText(chatId, "We are sorry! so sorry!");
+                        }
+                    }
+            } catch (TelegramApiException e) {
+                e.printStackTrace();
+            }
+        }
+        else if (update.hasMessage() && update.getMessage().hasPhoto()) {
+            try {
+                String chatId = update.getMessage().getChatId().toString();
+                ChatStage stage = chatToStage.get(chatId);
+                if (stage != null) {
+                    if (Objects.requireNonNull(stage.getStage()) == Stage.ADD_FILE) {
+                        saveFile(update, stage);
+                        stage.setStage(Stage.ADD_DESCRIPTION);
+                        sendText(chatId, "Mem was loaded. Give me description!");
+                    } else {
+                        sendText(chatId, "Nice meme!");
+                    }
+                } else {
+                    sendText(chatId, "Nice meme!");
+                }
+            } catch (TelegramApiException e) {
+                e.printStackTrace();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
-    public Ability showMenu() {
-        return Ability
-            .builder()
-            .name("menu")
-            .info("Shows menu")
-            .input(0)
-            .locality(USER)
-            .privacy(ADMIN)
-            .action(ctx -> silent.execute(getMenuMessage(ctx.chatId().toString())))
-            .build();
+    private boolean isMemeNameUnique(String name) {
+        return memeStorage.isNameUnique(name);
+    }
+
+    private void saveFile(Update update, ChatStage stage) throws IOException {
+        PhotoSize size = getPhoto(update);
+        String path = getFilePath(size);
+        java.io.File file = downloadPhotoByFilePath(path);
+        String filename = stage.getAddParameters().getName();
+        String fullFileName = MEMES_DIR + filename;
+        Files.move(file.toPath(), Path.of(fullFileName));
+        Long pictureId = memeStorage.saveFilePath(fullFileName);
+        stage.getAddParameters().setPictureId(pictureId);
+    }
+
+
+    private void sendTo(String chatId, MemeFile meme) throws TelegramApiException {
+        switch (meme.type) {
+            case GIF -> {
+                SendAnimation animation = new SendAnimation(chatId, meme.getInputFile());
+                execute(animation);
+            } case PICTURE -> {
+                SendPhoto photo = new SendPhoto(chatId, meme.getInputFile());
+                execute(photo);
+            }
+        }
+    }
+    private void sendText(String chatId, String text) throws TelegramApiException {
+        execute(new SendMessage(chatId, text));
+    }
+
+    @PostConstruct
+    public void registration(){
+        try {
+            TelegramBotsApi telegramBotsApi = new TelegramBotsApi(DefaultBotSession.class);
+            telegramBotsApi.registerBot(this);
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+        }
     }
 
     public static BotApiMethod<Message> getMenuMessage(String chatId) {
@@ -97,121 +225,6 @@ public class MemesBot extends AbilityBot {
         keyboard.add(row);
         keyboardMarkup.setKeyboard(keyboard);
         return keyboardMarkup;
-    }
-
-
-    @Override
-    public void onUpdateReceived(Update update) {
-        if (update.hasMessage() && update.getMessage().hasText()) {
-            String incomeText = update.getMessage().getText();
-            SendMessage message = new SendMessage();
-            String chatId = update.getMessage().getChatId().toString();
-            message.setChatId(chatId);
-            ChatAddStage stage = this.chatToStage.get(chatId);
-            if (stage == null ) {
-                stage = new ChatAddStage(Stage.START);
-                this.chatToStage.put(chatId, stage);
-
-            }
-            try {
-                if (incomeText.equalsIgnoreCase(FIND)) {
-                    stage.setStage(Stage.SEARCH_START_KEYWORDS);
-                    message.setText("Enter key-words");
-                    execute(message);
-                } else if (incomeText.equalsIgnoreCase(ADD)) {
-                    stage.setStage(Stage.ADD_START_NAME);
-                    message.setText("Enter name of mem");
-                    execute(message);
-                }
-
-                else {
-                    switch (stage.getStage()) {
-                            case START -> {
-                                message.setText("You wanna play , let's play!");
-                                execute(message);
-                            }
-                            case SEARCH_START_KEYWORDS -> {
-                                var mem = memeStorage.findByInput(incomeText);
-                                sendTo(chatId, mem);
-                                stage.setStage(Stage.START);
-                            }
-                            case ADD_START_NAME -> {
-                                stage.setName(incomeText);
-                                stage.setStage(Stage.ADD_FILE);
-                                execute(new SendMessage(chatId, "Good name for mem: " + incomeText + "\nNow give me mem-file"));
-                            }
-                            case ADD_DESCRIPTION -> {
-                                stage.setDescription(incomeText);
-                                stage.setStage(Stage.ADD_CATEGORY);
-                                execute(new SendMessage(chatId, "Now add category for mem"));
-                            }
-                            case ADD_CATEGORY -> {
-                                stage.setCategory(incomeText);
-                                memeStorage.addMemByStage(stage);
-                                stage.setStage(Stage.START);
-                                execute(new SendMessage(chatId, "Good job! Mem was saved."));
-                            }
-                        }
-                    }
-            } catch (TelegramApiException e) {
-                e.printStackTrace();
-            }
-        }
-        else if (update.hasMessage() && update.getMessage().hasPhoto()) {
-            try {
-                String chatId = update.getMessage().getChatId().toString();
-                ChatAddStage stage = chatToStage.get(chatId);
-                if (stage != null) {
-                    if (Objects.requireNonNull(stage.getStage()) == Stage.ADD_FILE) {
-                        saveFile(update, stage);
-                        stage.setStage(Stage.ADD_DESCRIPTION);
-                        execute(new SendMessage(chatId, "Mem was loaded. Print description!"));
-                    } else {
-                        execute(new SendMessage(chatId, "Nice meme!"));
-                    }
-                } else {
-                    execute(new SendMessage(chatId, "Nice meme!"));
-                }
-            } catch (TelegramApiException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    private void saveFile(Update update, ChatAddStage stage) throws IOException {
-        PhotoSize size = getPhoto(update);
-        String path = getFilePath(size);
-        java.io.File file = downloadPhotoByFilePath(path);
-        String filename = stage.getName();
-        String fullFileName = MEMES_DIR + filename;
-        Files.move(file.toPath(), Path.of(fullFileName));
-        Long pictureId = memeStorage.saveFilePath(fullFileName);
-        stage.setPictureId(pictureId);
-    }
-
-
-    public void sendTo(String chatId, MemeFile meme) throws TelegramApiException {
-        switch (meme.type) {
-            case GIF -> {
-                SendAnimation animation = new SendAnimation(chatId, meme.getInputFile());
-                execute(animation);
-            } case PICTURE -> {
-                SendPhoto photo = new SendPhoto(chatId, meme.getInputFile());
-                execute(photo);
-            }
-        }
-    }
-
-    @PostConstruct
-    public void post(){
-        try {
-            TelegramBotsApi telegramBotsApi = new TelegramBotsApi(DefaultBotSession.class);
-            telegramBotsApi.registerBot(this);
-        } catch (TelegramApiException e) {
-            e.printStackTrace();
-        }
     }
 
     public PhotoSize getPhoto(Update update) {

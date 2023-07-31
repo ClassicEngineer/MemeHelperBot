@@ -1,7 +1,9 @@
-package ru.daniladeveloper.meme.infrustructure;
+package ru.daniladeveloper.meme.application;
 
 public enum Stage {
         SEARCH_START_KEYWORDS,
+
+        SEARCH_CHOICE,
 
         START,
 
